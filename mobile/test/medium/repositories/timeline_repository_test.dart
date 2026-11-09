@@ -1,5 +1,8 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
+import 'package:immich_mobile/domain/models/timeline.model.dart';
 import 'package:immich_mobile/infrastructure/repositories/timeline.repository.dart';
 import 'package:intl/date_symbol_data_local.dart';
 
@@ -20,6 +23,119 @@ void main() {
 
   tearDown(() async {
     await ctx.dispose();
+  });
+
+  group('covering main timeline index', () {
+    test('preserves group-date ordering, created-date ties, day/month buckets and null exclusion', () async {
+      final user = await ctx.newUser();
+      final shifted = await ctx.newRemoteAsset(
+        ownerId: user.id,
+        createdAt: DateTime.utc(2026, 6, 30, 12),
+        localDateTime: DateTime.utc(2026, 7, 2, 12),
+      );
+      final newer = await ctx.newRemoteAsset(
+        ownerId: user.id,
+        createdAt: DateTime.utc(2026, 7, 2, 14),
+        localDateTime: DateTime.utc(2026, 7, 2, 14),
+      );
+      final fallback = await ctx.newRemoteAsset(ownerId: user.id, createdAt: DateTime.utc(2026, 6, 29, 12));
+      final missing = await ctx.newRemoteAsset(ownerId: user.id);
+      await ctx.db.customStatement('UPDATE remote_asset_entity SET local_date_time = NULL WHERE id = ?', [fallback.id]);
+      await ctx.db.customStatement('UPDATE remote_asset_entity SET group_date = NULL WHERE id = ?', [missing.id]);
+
+      final day = sut.main([user.id], .day);
+      final assets = await day.assetSource(0, 10);
+      expect(assets.map((asset) => asset.remoteId), [newer.id, shifted.id, fallback.id]);
+      expect(await day.bucketSource().first, [
+        TimeBucket(date: DateTime(2026, 7, 2), assetCount: 2),
+        TimeBucket(date: DateTime(2026, 6, 29), assetCount: 1),
+      ]);
+      expect(await sut.main([user.id], .month).bucketSource().first, [
+        TimeBucket(date: DateTime(2026, 7), assetCount: 2),
+        TimeBucket(date: DateTime(2026, 6), assetCount: 1),
+      ]);
+    });
+
+    test('filters non-timeline, deleted and secondary stack assets while including enabled partners', () async {
+      final user = await ctx.newUser();
+      final partner = await ctx.newUser();
+      final excludedPartner = await ctx.newUser();
+      await ctx.newPartner(sharedById: partner.id, sharedWithId: user.id, inTimeline: true);
+      await ctx.newPartner(sharedById: excludedPartner.id, sharedWithId: user.id, inTimeline: false);
+      final own = await ctx.newRemoteAsset(ownerId: user.id);
+      final shared = await ctx.newRemoteAsset(ownerId: partner.id);
+      await ctx.newRemoteAsset(ownerId: excludedPartner.id);
+      for (final visibility in AssetVisibility.values.where((value) => value != AssetVisibility.timeline)) {
+        await ctx.newRemoteAsset(ownerId: user.id, visibility: visibility);
+      }
+      await ctx.newRemoteAsset(ownerId: user.id, deletedAt: DateTime.utc(2026));
+      final primary = await ctx.newRemoteAsset(ownerId: user.id, stackId: 'stack');
+      await ctx.newRemoteAsset(ownerId: user.id, stackId: 'stack');
+      await ctx.newRemoteAsset(ownerId: user.id, stackId: 'missing-stack');
+      await ctx.db.customStatement('INSERT INTO stack_entity (id, owner_id, primary_asset_id) VALUES (?, ?, ?)', [
+        'stack',
+        user.id,
+        primary.id,
+      ]);
+      final users = await sut.watchTimelineUserIds(user.id).first;
+      final query = sut.main(users, .day);
+      expect(
+        (await query.assetSource(0, 100)).map((asset) => asset.remoteId),
+        unorderedEquals([own.id, shared.id, primary.id]),
+      );
+      expect((await query.bucketSource().first).fold<int>(0, (total, bucket) => total + bucket.assetCount), 3);
+    });
+
+    test('deduplicates remote/local checksums and respects selected and excluded local albums', () async {
+      final user = await ctx.newUser();
+      final selected = await ctx.newLocalAlbum(backupSelection: .selected);
+      final excluded = await ctx.newLocalAlbum(backupSelection: .excluded);
+      final unselected = await ctx.newLocalAlbum();
+      final remote = await ctx.newRemoteAsset(ownerId: user.id, checksum: 'shared-checksum');
+      final duplicate = await ctx.newLocalAsset(checksum: 'shared-checksum');
+      final included = await ctx.newLocalAsset();
+      final excludedAsset = await ctx.newLocalAsset();
+      final unselectedAsset = await ctx.newLocalAsset();
+      final nullGroupDate = await ctx.newLocalAsset();
+      for (final asset in [duplicate, included, excludedAsset, nullGroupDate]) {
+        await ctx.newLocalAlbumAsset(albumId: selected.id, assetId: asset.id);
+      }
+      await ctx.newLocalAlbumAsset(albumId: excluded.id, assetId: excludedAsset.id);
+      await ctx.newLocalAlbumAsset(albumId: unselected.id, assetId: unselectedAsset.id);
+      await ctx.db.customStatement('UPDATE local_asset_entity SET group_date = NULL WHERE id = ?', [nullGroupDate.id]);
+      final query = sut.main([user.id], .day);
+      final assets = await query.assetSource(0, 100);
+      expect(assets, hasLength(2));
+      expect(assets.whereType<RemoteAsset>().single.id, remote.id);
+      expect(assets.whereType<RemoteAsset>().single.localId, duplicate.id);
+      expect(assets.whereType<LocalAsset>().single.id, included.id);
+      expect((await query.bucketSource().first).fold<int>(0, (total, bucket) => total + bucket.assetCount), 2);
+    });
+
+    test('naturally selects the covering group index for the unchanged bucket query', () async {
+      await ctx.newUser(id: 'owner');
+      await ctx.db.customStatement('''
+        WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 3000)
+        INSERT INTO remote_asset_entity (id, name, type, checksum, owner_id, visibility, group_date)
+        SELECT 'asset-' || i, 'asset.jpg', 1, 'checksum-' || i, 'owner', 0,
+          CASE WHEN i % 2 = 0 THEN '2026-07-24' ELSE '2026-07-25' END
+        FROM n
+      ''');
+      await ctx.db.customStatement('ANALYZE');
+      final sql = File('lib/data/db/main/query/merged_asset.drift')
+          .readAsStringSync()
+          .split('mergedBucket(:group_by AS INTEGER):')
+          .last
+          .replaceAll(':user_ids', "('owner')")
+          .replaceAll(':group_by', '0');
+      final plan = await ctx.db.customSelect('EXPLAIN QUERY PLAN $sql').get();
+      expect(
+        plan.map((row) => row.read<String>('detail')),
+        contains(contains('USING COVERING INDEX idx_remote_asset_group')),
+      );
+      final buckets = await sut.main(['owner'], .day).bucketSource().first;
+      expect(buckets.map((bucket) => bucket.assetCount), [1500, 1500]);
+    });
   });
 
   group('remoteAlbum assets', () {
