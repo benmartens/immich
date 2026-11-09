@@ -18,6 +18,7 @@ import 'package:immich_mobile/providers/app_life_cycle.provider.dart';
 import 'package:immich_mobile/providers/auth.provider.dart';
 import 'package:immich_mobile/providers/background_sync.provider.dart';
 import 'package:immich_mobile/providers/backup/backup.provider.dart';
+import 'package:immich_mobile/providers/infrastructure/timeline.provider.dart';
 import 'package:immich_mobile/providers/server_info.provider.dart';
 import 'package:immich_mobile/providers/view_intent/view_intent_handler.provider.dart';
 import 'package:immich_mobile/providers/websocket.provider.dart';
@@ -316,6 +317,9 @@ class SplashScreenPageState extends ConsumerState<SplashScreenPage> {
       final lifeCycle = ref.read(appStateProvider.notifier);
       final viewIntentHandler = ref.read(viewIntentHandlerProvider);
       final authNotifier = ref.read(authProvider.notifier);
+      final localSync = Store.tryGet(StoreKey.currentUser) != null && ref.read(recentDevicePhotosEnabledProvider)
+          ? lifeCycle.syncLocalForStartup()
+          : null;
 
       unawaited(
         authNotifier
@@ -343,7 +347,7 @@ class SplashScreenPageState extends ConsumerState<SplashScreenPage> {
 
                   bool syncSuccess = false;
                   await Future.wait([
-                    backgroundManager.syncLocal(full: true),
+                    localSync ?? backgroundManager.syncLocal(full: true),
                     backgroundManager.syncRemote().then((success) => syncSuccess = success),
                   ]);
 

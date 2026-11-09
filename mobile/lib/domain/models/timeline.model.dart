@@ -4,6 +4,13 @@ enum HeaderType { none, month, day, monthAndDay }
 
 enum SortAssetsBy { taken, uploaded }
 
+class RecentDeviceTimeline {
+  final List<String> albumIds;
+  final int? cutoffSeconds;
+
+  const RecentDeviceTimeline({required this.albumIds, this.cutoffSeconds});
+}
+
 class Bucket {
   final int assetCount;
 

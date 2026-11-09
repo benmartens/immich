@@ -11,5 +11,7 @@ abstract class TimelineConfig with _$TimelineConfig {
     @Default(GroupAssetsBy.day) GroupAssetsBy groupAssetsBy,
     @Default(true) bool storageIndicator,
     @Default(false) bool smoothScrubbing,
+    @Default(false) bool recentDevicePhotos,
+    @Default([]) List<String> recentDeviceAlbumIds,
   }) = _TimelineConfig;
 }

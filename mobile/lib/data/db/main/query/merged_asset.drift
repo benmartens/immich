@@ -4,7 +4,7 @@ import '../table/local/asset.dart';
 import '../table/local/album.dart';
 import '../table/local/album_asset.dart';
 
-mergedAsset:
+mergedAsset(:recent_local_mode AS INTEGER, :has_local_cutoff AS INTEGER, :local_cutoff_seconds AS INTEGER):
 SELECT
 	rae.id as remote_id,
 	(SELECT lae.id FROM local_asset_entity lae WHERE lae.checksum = rae.checksum LIMIT 1) as local_id,
@@ -76,21 +76,34 @@ FROM
 WHERE NOT EXISTS (
 	SELECT 1 FROM remote_asset_entity rae WHERE rae.checksum = lae.checksum AND rae.owner_id IN :user_ids
 )
-AND EXISTS (
-	SELECT 1 FROM local_album_asset_entity laa
-	INNER JOIN local_album_entity la on laa.album_id = la.id
-	WHERE laa.asset_id = lae.id AND la.backup_selection = 0 -- selected
-)
-AND NOT EXISTS (
-    SELECT 1 FROM local_album_asset_entity laa
-    INNER JOIN local_album_entity la on laa.album_id = la.id
-    WHERE laa.asset_id = lae.id AND la.backup_selection = 2 -- excluded
+AND (
+	(
+		:recent_local_mode = 1
+		AND EXISTS (
+			SELECT 1 FROM local_album_asset_entity laa
+			WHERE laa.asset_id = lae.id AND laa.album_id IN :local_album_ids
+		)
+		AND (:has_local_cutoff = 0 OR UNIXEPOCH(lae.created_at) > :local_cutoff_seconds)
+	)
+	OR (
+		:recent_local_mode = 0
+		AND EXISTS (
+			SELECT 1 FROM local_album_asset_entity laa
+			INNER JOIN local_album_entity la on laa.album_id = la.id
+			WHERE laa.asset_id = lae.id AND la.backup_selection = 0 -- selected
+		)
+		AND NOT EXISTS (
+			SELECT 1 FROM local_album_asset_entity laa
+			INNER JOIN local_album_entity la on laa.album_id = la.id
+			WHERE laa.asset_id = lae.id AND la.backup_selection = 2 -- excluded
+		)
+	)
 )
 AND lae.group_date IS NOT NULL
 ORDER BY group_date DESC, created_at DESC
 LIMIT $limit;
 
-mergedBucket(:group_by AS INTEGER):
+mergedBucket(:group_by AS INTEGER, :recent_local_mode AS INTEGER, :has_local_cutoff AS INTEGER, :local_cutoff_seconds AS INTEGER):
 SELECT
 	COUNT(*) as asset_count,
 	bucket_date
@@ -125,15 +138,28 @@ FROM
 	WHERE NOT EXISTS (
 		SELECT 1 FROM remote_asset_entity rae WHERE rae.checksum = lae.checksum AND rae.owner_id IN :user_ids
 	)
-	AND EXISTS (
-		SELECT 1 FROM local_album_asset_entity laa
-		INNER JOIN local_album_entity la on laa.album_id = la.id
-		WHERE laa.asset_id = lae.id AND la.backup_selection = 0 -- selected
-	)
-	AND NOT EXISTS (
-		SELECT 1 FROM local_album_asset_entity laa
-		INNER JOIN local_album_entity la on laa.album_id = la.id
-		WHERE laa.asset_id = lae.id AND la.backup_selection = 2 -- excluded
+	AND (
+		(
+			:recent_local_mode = 1
+			AND EXISTS (
+				SELECT 1 FROM local_album_asset_entity laa
+				WHERE laa.asset_id = lae.id AND laa.album_id IN :local_album_ids
+			)
+			AND (:has_local_cutoff = 0 OR UNIXEPOCH(lae.created_at) > :local_cutoff_seconds)
+		)
+		OR (
+			:recent_local_mode = 0
+			AND EXISTS (
+				SELECT 1 FROM local_album_asset_entity laa
+				INNER JOIN local_album_entity la on laa.album_id = la.id
+				WHERE laa.asset_id = lae.id AND la.backup_selection = 0 -- selected
+			)
+			AND NOT EXISTS (
+				SELECT 1 FROM local_album_asset_entity laa
+				INNER JOIN local_album_entity la on laa.album_id = la.id
+				WHERE laa.asset_id = lae.id AND la.backup_selection = 2 -- excluded
+			)
+		)
 	)
 	AND lae.group_date IS NOT NULL
 )
