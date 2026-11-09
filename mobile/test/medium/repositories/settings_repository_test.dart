@@ -36,6 +36,20 @@ void main() {
   });
 
   group('write', () {
+    test('recent device folders persist without enabling or changing backup', () async {
+      await sut.write(.timelineRecentDevicePhotos, true);
+      await sut.write(.timelineRecentDeviceAlbumIds, ['camera', 'screenshots']);
+      await sut.refresh();
+
+      expect(sut.appConfig.timeline.recentDevicePhotos, isTrue);
+      expect(sut.appConfig.timeline.recentDeviceAlbumIds, ['camera', 'screenshots']);
+      expect(sut.appConfig.backup.enabled, isFalse);
+      expect(sut.appConfig.backup.syncAlbums, isFalse);
+
+      await sut.write(.timelineRecentDevicePhotos, false);
+      expect(sut.appConfig.timeline.recentDeviceAlbumIds, ['camera', 'screenshots']);
+    });
+
     test('persists a value and reflects it in the composed view', () async {
       await sut.write(.themeMode, ThemeMode.dark);
       expect(sut.appConfig.theme.mode, ThemeMode.dark);

@@ -49,6 +49,8 @@ enum SettingsKey<T> {
   timelineGroupAssetsBy<GroupAssetsBy>(codec: EnumCodec(GroupAssetsBy.values)),
   timelineStorageIndicator<bool>(),
   timelineSmoothScrubbing<bool>(),
+  timelineRecentDevicePhotos<bool>(),
+  timelineRecentDeviceAlbumIds<List<String>>(codec: ListCodec(PrimitiveCodec.string)),
 
   // Log
   logLevel<LogLevel>(codec: EnumCodec(LogLevel.values)),

@@ -12,6 +12,7 @@ import 'package:immich_mobile/providers/gallery_permission.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/memory.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/platform.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/settings.provider.dart';
+import 'package:immich_mobile/providers/infrastructure/timeline.provider.dart';
 import 'package:immich_mobile/providers/permission.provider.dart';
 import 'package:immich_mobile/providers/server_info.provider.dart';
 import 'package:immich_mobile/providers/websocket.provider.dart';
@@ -34,6 +35,11 @@ class AppLifeCycleNotifier extends StateNotifier<AppLifeCycleEnum> {
   AppLifeCycleNotifier(this._ref) : super(AppLifeCycleEnum.active);
 
   void requestFullResume() => _fullSyncPending = true;
+
+  Future<void> syncLocalForStartup() => _safeRun(() async {
+    await _prepareTimelineResume();
+    await _syncLocalOnResume();
+  }, 'local-first startup');
 
   Future<void> handleAppResume() async {
     state = AppLifeCycleEnum.resumed;
@@ -80,6 +86,11 @@ class AppLifeCycleNotifier extends StateNotifier<AppLifeCycleEnum> {
     _wasPaused = false;
 
     final isAuthenticated = _ref.read(authProvider).isAuthenticated;
+    Future<void>? localSync;
+    if (isAuthenticated && _ref.read(recentDevicePhotosEnabledProvider)) {
+      await _prepareTimelineResume();
+      localSync = _syncLocalOnResume();
+    }
 
     // Needs to be logged in
     if (isAuthenticated) {
@@ -94,7 +105,7 @@ class AppLifeCycleNotifier extends StateNotifier<AppLifeCycleEnum> {
       return;
     }
     _ref.read(websocketProvider.notifier).connect();
-    await _handleBetaTimelineResume();
+    await _handleBetaTimelineResume(localSync: localSync);
 
     await _ref.read(notificationPermissionProvider.notifier).getNotificationPermission();
 
@@ -113,7 +124,7 @@ class AppLifeCycleNotifier extends StateNotifier<AppLifeCycleEnum> {
     }
   }
 
-  Future<void> _handleBetaTimelineResume() async {
+  Future<void> _prepareTimelineResume() async {
     unawaited(_ref.read(backgroundWorkerLockServiceProvider).lock());
 
     // Give isolates time to complete any ongoing database transactions
@@ -125,17 +136,28 @@ class AppLifeCycleNotifier extends StateNotifier<AppLifeCycleEnum> {
     // starts fresh instead of awaiting the stale task (#28082). cancelResumeSyncs
     // clears the task refs synchronously, so the syncs below see a clean slate.
     unawaited(backgroundManager.cancelResumeSyncs());
+  }
 
+  Future<void> _syncLocalOnResume() => _safeRun(() async {
+    final full = CurrentPlatform.isAndroid || _fullSyncPending;
+    _fullSyncPending = false;
+    await _ref.read(backgroundSyncProvider).syncLocal(full: full);
+    if (mounted && _shouldContinueOperation() && _ref.read(recentDevicePhotosEnabledProvider)) {
+      _ref.invalidate(recentDeviceCutoffProvider);
+    }
+  }, 'syncLocal');
+
+  Future<void> _handleBetaTimelineResume({Future<void>? localSync}) async {
+    if (localSync == null) {
+      await _prepareTimelineResume();
+    }
+    final backgroundManager = _ref.read(backgroundSyncProvider);
     final isAlbumLinkedSyncEnable = _ref.read(appConfigProvider).backup.syncAlbums;
 
     try {
       bool syncSuccess = false;
       await Future.wait([
-        _safeRun(() {
-          final full = CurrentPlatform.isAndroid || _fullSyncPending;
-          _fullSyncPending = false;
-          return backgroundManager.syncLocal(full: full);
-        }, "syncLocal"),
+        localSync ?? _syncLocalOnResume(),
         _safeRun(() async {
           syncSuccess = await backgroundManager.syncRemote();
         }, "syncRemote"),

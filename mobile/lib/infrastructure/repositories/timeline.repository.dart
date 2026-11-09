@@ -33,26 +33,78 @@ class TimelineRepository extends DatabaseAccessor<Drift> with $TimelineRepositor
         .map((users) => users..add(userId));
   }
 
-  TimelineQuery main(List<String> userIds, GroupAssetsBy groupBy) => (
-    bucketSource: () => _watchMainBucket(userIds, groupBy: groupBy),
-    assetSource: (offset, count) => _getMainBucketAssets(userIds, offset: offset, count: count),
+  Stream<int?> watchRecentDeviceCutoff(String userId, {DateTime? now}) {
+    const capturedAt = CustomExpression<int>('unixepoch(remote_asset_entity.created_at)');
+    final currentTime = now == null
+        ? const CustomExpression<int>("unixepoch('now')")
+        : Variable<int>(now.millisecondsSinceEpoch ~/ 1000);
+    final query = _db.remoteAssetEntity.selectOnly()
+      ..addColumns([capturedAt])
+      ..join([
+        leftOuterJoin(_db.stackEntity, _db.remoteAssetEntity.stackId.equalsExp(_db.stackEntity.id), useColumns: false),
+      ])
+      ..where(
+        _db.remoteAssetEntity.ownerId.equals(userId) &
+            _db.remoteAssetEntity.libraryId.isNotNull() &
+            _db.remoteAssetEntity.deletedAt.isNull() &
+            _db.remoteAssetEntity.visibility.equalsValue(AssetVisibility.timeline) &
+            _db.remoteAssetEntity.groupDate.isNotNull() &
+            capturedAt.isSmallerOrEqual(currentTime) &
+            (_db.remoteAssetEntity.stackId.isNull() |
+                _db.remoteAssetEntity.id.equalsExp(_db.stackEntity.primaryAssetId)),
+      )
+      ..orderBy([OrderingTerm.desc(_db.remoteAssetEntity.createdAt)])
+      ..limit(1);
+    return query.map((row) => row.read(capturedAt)).watchSingleOrNull().distinct();
+  }
+
+  TimelineQuery main(List<String> userIds, GroupAssetsBy groupBy, {RecentDeviceTimeline? recentDevicePhotos}) => (
+    bucketSource: () => _watchMainBucket(userIds, groupBy: groupBy, recentDevicePhotos: recentDevicePhotos),
+    assetSource: (offset, count) =>
+        _getMainBucketAssets(userIds, offset: offset, count: count, recentDevicePhotos: recentDevicePhotos),
     origin: TimelineOrigin.main,
   );
 
-  Stream<List<Bucket>> _watchMainBucket(List<String> userIds, {GroupAssetsBy groupBy = GroupAssetsBy.day}) {
+  Stream<List<Bucket>> _watchMainBucket(
+    List<String> userIds, {
+    GroupAssetsBy groupBy = GroupAssetsBy.day,
+    RecentDeviceTimeline? recentDevicePhotos,
+  }) {
     if (groupBy == GroupAssetsBy.none || groupBy == GroupAssetsBy.auto) {
       throw UnsupportedError("$groupBy is not supported for watchMainBucket");
     }
 
-    return _db.mergedAssetDrift.mergedBucket(userIds: userIds, groupBy: groupBy.index).map((row) {
-      final date = row.bucketDate!.truncateDate(groupBy);
-      return TimeBucket(date: date, assetCount: row.assetCount);
-    }).watch();
+    return _db.mergedAssetDrift
+        .mergedBucket(
+          userIds: userIds,
+          groupBy: groupBy.index,
+          recentLocalMode: recentDevicePhotos == null ? 0 : 1,
+          localAlbumIds: recentDevicePhotos?.albumIds ?? const [],
+          hasLocalCutoff: recentDevicePhotos?.cutoffSeconds == null ? 0 : 1,
+          localCutoffSeconds: recentDevicePhotos?.cutoffSeconds ?? 0,
+        )
+        .map((row) {
+          final date = row.bucketDate!.truncateDate(groupBy);
+          return TimeBucket(date: date, assetCount: row.assetCount);
+        })
+        .watch();
   }
 
-  Future<List<BaseAsset>> _getMainBucketAssets(List<String> userIds, {required int offset, required int count}) {
+  Future<List<BaseAsset>> _getMainBucketAssets(
+    List<String> userIds, {
+    required int offset,
+    required int count,
+    RecentDeviceTimeline? recentDevicePhotos,
+  }) {
     return _db.mergedAssetDrift
-        .mergedAsset(userIds: userIds, limit: (_) => Limit(count, offset))
+        .mergedAsset(
+          userIds: userIds,
+          limit: (_) => Limit(count, offset),
+          recentLocalMode: recentDevicePhotos == null ? 0 : 1,
+          localAlbumIds: recentDevicePhotos?.albumIds ?? const [],
+          hasLocalCutoff: recentDevicePhotos?.cutoffSeconds == null ? 0 : 1,
+          localCutoffSeconds: recentDevicePhotos?.cutoffSeconds ?? 0,
+        )
         .map(
           (row) => row.remoteId != null && row.ownerId != null
               ? RemoteAsset(
