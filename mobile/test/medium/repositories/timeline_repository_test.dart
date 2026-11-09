@@ -112,8 +112,11 @@ void main() {
       expect((await query.bucketSource().first).fold<int>(0, (total, bucket) => total + bucket.assetCount), 2);
     });
 
-    test('naturally selects the covering group index for the unchanged bucket query', () async {
+    test('naturally selects the covering group index in both local timeline modes', () async {
       await ctx.newUser(id: 'owner');
+      await ctx.newLocalAlbum(id: 'camera');
+      await ctx.newLocalAsset(id: 'recent-local', createdAt: DateTime(2026, 7, 26, 12));
+      await ctx.newLocalAlbumAsset(albumId: 'camera', assetId: 'recent-local');
       await ctx.db.customStatement('''
         WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 3000)
         INSERT INTO remote_asset_entity (id, name, type, checksum, owner_id, visibility, group_date)
@@ -122,19 +125,36 @@ void main() {
         FROM n
       ''');
       await ctx.db.customStatement('ANALYZE');
-      final sql = File('lib/data/db/main/query/merged_asset.drift')
-          .readAsStringSync()
-          .split('mergedBucket(:group_by AS INTEGER):')
-          .last
-          .replaceAll(':user_ids', "('owner')")
-          .replaceAll(':group_by', '0');
-      final plan = await ctx.db.customSelect('EXPLAIN QUERY PLAN $sql').get();
-      expect(
-        plan.map((row) => row.read<String>('detail')),
-        contains(contains('USING COVERING INDEX idx_remote_asset_group')),
-      );
-      final buckets = await sut.main(['owner'], .day).bucketSource().first;
-      expect(buckets.map((bucket) => bucket.assetCount), [1500, 1500]);
+      final source = File('lib/data/db/main/query/merged_asset.drift').readAsStringSync();
+      final header = RegExp(r'mergedBucket\([^)]*\):').firstMatch(source);
+      expect(header, isNotNull);
+      final bucketSql = source.substring(header!.end);
+      final cutoffSeconds = DateTime.utc(2026, 7, 25).millisecondsSinceEpoch ~/ 1000;
+      for (final recentLocalMode in [0, 1]) {
+        final sql = bucketSql
+            .replaceAll(':user_ids', "('owner')")
+            .replaceAll(':group_by', '0')
+            .replaceAll(':recent_local_mode', '$recentLocalMode')
+            .replaceAll(':local_album_ids', "('camera')")
+            .replaceAll(':has_local_cutoff', '1')
+            .replaceAll(':local_cutoff_seconds', '$cutoffSeconds');
+        final plan = await ctx.db.customSelect('EXPLAIN QUERY PLAN $sql').get();
+        expect(
+          plan.map((row) => row.read<String>('detail')),
+          contains(contains('USING COVERING INDEX idx_remote_asset_group')),
+        );
+        final buckets = await sut
+            .main(
+              ['owner'],
+              .day,
+              recentDevicePhotos: recentLocalMode == 0
+                  ? null
+                  : RecentDeviceTimeline(albumIds: ['camera'], cutoffSeconds: cutoffSeconds),
+            )
+            .bucketSource()
+            .first;
+        expect(buckets.map((bucket) => bucket.assetCount), recentLocalMode == 0 ? [1500, 1500] : [1, 1500, 1500]);
+      }
     });
   });
 
