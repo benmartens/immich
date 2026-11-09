@@ -22,6 +22,10 @@ void main(List<String> args) async {
     if (!input.config.buildCodeAssets) return;
     final code = input.config.code;
     output.dependencies.addAll(_manifests.map(input.packageRoot.resolve));
+    final localCargoConfig = input.packageRoot.resolve('.cargo/config.toml');
+    if (await File.fromUri(localCargoConfig).exists()) {
+      output.dependencies.add(localCargoConfig);
+    }
     final target = _crossTarget(code);
     if (target != null) {
       await _rustup(['target', 'add', '--toolchain', await _channel(input), target]);

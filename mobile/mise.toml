@@ -145,6 +145,14 @@ run = "dart format --set-exit-if-changed $(find lib -name '*.dart' -not \\( -nam
 description = "Build Android release"
 run = "flutter build appbundle"
 
+[tasks."build:android:apk"]
+description = "Build an Android release APK"
+run = "flutter build apk --release"
+
+[tasks."build:android:personal"]
+description = "Build and verify a signed Immich Martens release APK on Windows"
+run = "pwsh -NoProfile -File scripts/build_personal_apk.ps1"
+
 [tasks.install]
 alias = "install"
 description = "Install flutter dependencies"

@@ -8,6 +8,7 @@ plugins {
 }
 
 def keystoreProperties = new Properties()
+def keystorePath = System.getenv("ANDROID_KEYSTORE_FILE")
 def keystorePropertiesFile = rootProject.file('key.properties')
 if (keystorePropertiesFile.exists()) {
   keystorePropertiesFile.withInputStream { keystoreProperties.load(it) }
@@ -54,7 +55,8 @@ android {
 
       keyAlias keyAliasVal ?: keystoreProperties['keyAlias']
       keyPassword keyPasswordVal ?: keystoreProperties['keyPassword']
-      storeFile file("../key.jks").exists() ? file("../key.jks") : file(keystoreProperties['storeFile'] ?: '../key.jks')
+      storeFile = keystorePath ? file(keystorePath) :
+        (file("../key.jks").exists() ? file("../key.jks") : file(keystoreProperties['storeFile'] ?: '../key.jks'))
       storePassword storePasswordVal ?: keystoreProperties['storePassword']
     }
   }
@@ -66,7 +68,11 @@ android {
     }
 
     release {
-      def hasKeystore = file("../key.jks").exists() && file("../key.jks").length() > 0
+      def keystoreFile = signingConfigs.release.storeFile
+      def hasKeystore = keystoreFile.exists() && keystoreFile.length() > 0
+      if (keystorePath && !hasKeystore) {
+        throw new GradleException("The configured Android signing keystore is missing or empty")
+      }
       signingConfig hasKeystore ? signingConfigs.release : signingConfigs.debug
       proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
 
@@ -74,7 +80,7 @@ android {
       if (prNumber) {
         applicationIdSuffix ".pr${prNumber}"
         versionNameSuffix "-pr${prNumber}"
-        resValue "string", "app_name", "Immich PR ${prNumber}"
+        resValue "string", "app_name", System.getenv("IMMICH_APP_LABEL") ?: "Immich PR ${prNumber}"
       }
     }
   }

@@ -6,6 +6,56 @@ The Immich mobile app is a Flutter-based solution leveraging the Drift (SQLite) 
 
 See [setup](https://docs.immich.app/developer/setup) for how to set up the mobile build environment.
 
+### Personal Android release APKs
+
+On Windows, with PowerShell 7, Android SDK build-tools, Visual Studio C++ build tools,
+and the mobile development environment installed, check out `personal-build` and run:
+
+```powershell
+mise //mobile:build:android:personal
+```
+
+This builds the current checkout without fetching, merging, or switching branches.
+After switching branches or updating source, prepare the generated mobile files using
+`mise //mobile:checkout` first. On Windows, run that Bash-based task with
+`mise run --shell "bash -e -c" //mobile:checkout`.
+
+The command sets the launcher name to **Immich Martens** and the application ID to
+`app.alextran.immich.prmartens`, so it installs alongside the official app.
+It builds a universal release APK for ARM64, ARMv7, and x86-64, verifies the identity,
+release mode, native libraries, and original signing certificate, then copies the APK
+to `$HOME\OneDrive\temp` and checks its SHA-256 checksum.
+Filenames include the app version, build date/time, and source commit; uncommitted
+changes add a `-dirty` suffix. Existing APKs are never overwritten.
+
+The private signing configuration is `$HOME\.android\immich-martens-signing.json`.
+Its fields are `keystore` (the absolute path to the existing PKCS12 keystore),
+`alias`, `storePassword`, and `keyPassword`.
+Keep that file and the keystore outside Git, protected by current-user-only permissions.
+On another machine, securely restore the same key and credentials and update the
+keystore path. Do not generate a replacement key: updates must use the original
+certificate to preserve the existing installation and its data.
+The personal command refuses another certificate and never falls back to debug signing.
+
+To select another output directory or private configuration file:
+
+```powershell
+mise //mobile:build:android:personal -- -OutputDirectory "C:\Builds" -SigningConfig "$HOME\.android\immich-martens-signing.json"
+```
+
+The script discovers the installed Visual Studio toolchain and mise's NASM, writes a
+temporary, ignored `native\native_core\.cargo\config.toml` for Flutter's native build
+hooks, and removes it even when the build fails. It never rewrites the tracked Cargo
+configuration or `android\key.properties`.
+If a process is forcibly terminated and leaves that temporary file behind, inspect it
+before removing it and retrying. An existing local Cargo configuration is never overwritten.
+
+For generic APK builds, `mise //mobile:build:android:apk` retains the normal signing
+behavior, including the debug-key fallback when no keystore is configured.
+`PR_NUMBER` selects an isolated application ID, `IMMICH_APP_LABEL` customizes its
+launcher name, and `ANDROID_KEYSTORE_FILE` explicitly selects a signing keystore.
+Never commit signing keys, credentials, or APKs.
+
 ## Static Analysis
 
 The following checks of static analysis must pass for a contribution to the mobile app to be valid:
